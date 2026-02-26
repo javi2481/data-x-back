@@ -12,6 +12,8 @@ Integration strategy:
 """
 
 import os
+import json
+import re
 import logging
 import traceback
 from typing import Any, Dict, List, Optional
@@ -173,11 +175,22 @@ async def analyze(req: AnalyzeRequest):
         data_context = df.to_string(index=False, max_rows=20) # Sample 20 rows
         
         prompt = (
-            f"Context: Analyze the following data sample from '{req.fileName or 'dataset'}' "
-            f"({len(req.data)} total rows).\n\n"
-            f"Data:\n{data_context}\n\n"
             f"Question: {req.question}\n\n"
-            "Provide a clear, insight-driven response."
+            f"Data Context (sample of {len(req.data)} rows from {req.fileName or 'dataset'}):\n{data_context}\n\n"
+            "INSTRUCTIONS:\n"
+            "1. Analyze the data and answer the question.\n"
+            "2. If appropriate, create one or more visualizations using Vega-Lite schema.\n"
+            "3. MANDATORY: Respond ONLY with a valid JSON object in this format:\n"
+            "{\n"
+            "  \"content\": \"Your detailed analysis here (markdown supported)\",\n"
+            "  \"visualizations\": [\n"
+            "    {\n"
+            "      \"type\": \"vega-lite\",\n"
+            "      \"specification\": { ... Vega-Lite JSON spec ... }\n"
+            "    }\n"
+            "  ]\n"
+            "}\n"
+            "If no visualization is needed, return an empty array for \"visualizations\"."
         )
 
         logger.info(f"Submitting to sphinxai.llm: question='{req.question[:50]}...'")
@@ -185,13 +198,34 @@ async def analyze(req: AnalyzeRequest):
         # Call the library
         response_text = await sphinxai.llm(
             prompt=prompt,
-            model_size="M",  # Medium tier as requested in docs
+            model_size="M",
             timeout=60.0
         )
 
+        # ── Parse Response ──────────────────────────────────────────
+        try:
+            # Try plain parse
+            parsed = json.loads(response_text)
+            content = parsed.get("content", response_text)
+            visualizations = parsed.get("visualizations", [])
+        except json.JSONDecodeError:
+            # Try to extract JSON if encapsulated in code blocks or text
+            match = re.search(r"\{.*\}", response_text, re.DOTALL)
+            if match:
+                try:
+                    parsed = json.loads(match.group())
+                    content = parsed.get("content", response_text)
+                    visualizations = parsed.get("visualizations", [])
+                except:
+                    content = response_text
+                    visualizations = []
+            else:
+                content = response_text
+                visualizations = []
+
         return AnalyzeResponse(
-            content=response_text,
-            visualizations=[], # Currently returning empty as lib doesn't generate them directly
+            content=content,
+            visualizations=visualizations,
             isMock=False
         )
 
