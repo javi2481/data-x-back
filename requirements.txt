@@ -4,3 +4,5 @@ pandas
 pydantic
 python-multipart
 python-dotenv
+sphinx-ai-cli
+nbformat

@@ -152,26 +152,37 @@ El frontend / edge function debe:
 
 ## SphinxAI — Estrategia de integración
 
-El backend intenta dos caminos en orden:
+El backend usa **`sphinx-cli`** (`pip install sphinx-ai-cli`) como motor de análisis:
 
-1. **Python SDK** (`import sphinxai`): si el paquete está instalado, se instancia el cliente pasando `SPHINX_API_KEY` explícitamente al constructor.
-2. **CLI fallback** (`sphinx-cli`): si el SDK no está disponible, se invoca `sphinx-cli` como subproceso con `SPHINX_API_KEY` inyectado en el entorno del proceso hijo (nunca impreso en logs).
+1. Los datos del request se escriben a un CSV temporal.
+2. Se crea un `.ipynb` mínimo que carga ese CSV en un DataFrame.
+3. Se invoca `sphinx-cli chat --notebook-filepath <nb> --prompt <question>` con `SPHINX_API_KEY` inyectado en el entorno del subproceso (nunca impreso en logs).
+4. Se parsea el stdout y se normaliza al schema `{ content, visualizations, isMock }`.
 
-Si ninguno está disponible, `/health` reporta `"sphinx_available": false` y `/analyze` devuelve un error 500 claro.
+Para verificar que el CLI está disponible:
+
+```bash
+sphinx-cli -h
+```
+
+> **Ref:** [docs.sphinx.ai/cli-documentation/installation](https://docs.sphinx.ai/cli-documentation/installation)
 
 ---
 
 ## Evidence
 
-> Verificación local ejecutada el 2026-02-25.
+> Verificación local ejecutada el 2026-02-25 con `sphinx-ai-cli` v1.0.6 instalado.
 
 ### `GET /health`
 
 ```
 $ curl http://localhost:8000/health
 
-{"ok":true,"sphinx_available":true,"max_rows":5000}
+{"ok":true,"sphinx_available":true,"sphinx_authenticated":false,"max_rows":5000}
 ```
+
+> `sphinx_available: true` confirma que `sphinx-cli` está en PATH.
+> `sphinx_authenticated: false` porque `SPHINX_API_KEY` no está seteada en este entorno de prueba.
 
 ### `POST /analyze` — error 400 (question vacía)
 
@@ -189,13 +200,13 @@ $ curl -X POST http://localhost:8000/analyze -H "Content-Type: application/json"
 HTTP 400 → {"detail":"'data' is required and must not be empty."}
 ```
 
-### `POST /analyze` — error 500 (SphinxAI no configurado)
+### `POST /analyze` — error 500 (SPHINX_API_KEY no seteada)
 
 ```
 $ curl -X POST http://localhost:8000/analyze -H "Content-Type: application/json" \
   -d '{"question":"avg sales?","data":[{"producto":"A","ventas":100},{"producto":"B","ventas":250}]}'
 
-HTTP 500 → {"detail":"SphinxAI is not available. Install the sphinxai Python package or ensure sphinx-cli is in PATH. Errors: CLI: SPHINX_API_KEY is required but not set"}
+HTTP 500 → {"detail":"SPHINX_API_KEY env var is required but not set. Get your key at https://dashboard.prod.sphinx.ai"}
 ```
 
-> **Nota:** En producción con `SPHINX_API_KEY` configurada y `sphinx-cli` / SDK disponible, el endpoint devuelve la respuesta normalizada `{ content, visualizations, isMock }`.
+> **En producción** (Railway con `SPHINX_API_KEY` configurada), `/analyze` ejecuta el análisis completo y devuelve `{ content, visualizations, isMock: false }`.

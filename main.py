@@ -2,12 +2,17 @@
 Data-X Backend — Minimal FastAPI server that executes SphinxAI and returns
 JSON compatible with the Lovable frontend.
 
-SphinxAI integration strategy (in order of priority):
-  1. Python SDK: `import sphinxai` — if the pip package is installed.
-     The API key is passed explicitly via the constructor or set as env var.
-  2. CLI fallback: `sphinx-cli` — invoked via subprocess with SPHINX_API_KEY
-     injected into the child-process environment. Expects JSON output.
-  3. If neither is available the endpoint returns a clear 503 error.
+SphinxAI integration:
+  The CLI `sphinx-cli` (installed via `pip install sphinx-ai-cli`) is the
+  primary execution path.  It requires a .ipynb notebook, so the wrapper:
+    1. Writes the incoming DataFrame to a temp CSV.
+    2. Creates a minimal .ipynb that loads that CSV into a DataFrame.
+    3. Invokes `sphinx-cli chat --notebook-filepath <nb> --prompt <question>`
+       with SPHINX_API_KEY injected in the subprocess environment.
+    4. Parses stdout into the normalised {content, visualizations, isMock} shape.
+
+  Auth: SPHINX_API_KEY must be set as an environment variable (never hard-coded).
+  Docs: https://docs.sphinx.ai/cli-documentation/installation
 """
 
 import json
@@ -16,8 +21,10 @@ import shutil
 import subprocess
 import tempfile
 import traceback
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import nbformat
 import pandas as pd
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
@@ -35,7 +42,8 @@ SPHINX_API_KEY: Optional[str] = os.getenv("SPHINX_API_KEY")  # Never hard-coded
 # ── FastAPI app ───────────────────────────────────────────────────────
 app = FastAPI(
     title="Data-X Backend",
-    description="Minimal backend that runs SphinxAI and returns Lovable-compatible JSON.",
+    description="Minimal backend that runs SphinxAI via CLI and returns "
+                "Lovable-compatible JSON.",
 )
 
 # CORS — in dev defaults to "*"; in prod set CORS_ORIGINS env var.
@@ -52,12 +60,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── Attempt to import the SphinxAI Python SDK (optional) ─────────────
-try:
-    import sphinxai as _sphinxai_sdk  # type: ignore
-except ImportError:
-    _sphinxai_sdk = None
-
 
 # ── Pydantic models ──────────────────────────────────────────────────
 class AnalyzeRequest(BaseModel):
@@ -73,118 +75,101 @@ class AnalyzeResponse(BaseModel):
     isMock: bool = False
 
 
-# ── SphinxAI wrapper ─────────────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────────
 
-def _run_via_sdk(question: str, df: pd.DataFrame) -> AnalyzeResponse:
-    """Try the Python SDK first (sphinxai package)."""
-    if _sphinxai_sdk is None:
-        raise RuntimeError("SDK not installed")
-
-    # Strategy A: sphinxai.Sphinx class
-    if hasattr(_sphinxai_sdk, "Sphinx"):
-        client = _sphinxai_sdk.Sphinx(api_key=SPHINX_API_KEY)
-        fn = getattr(client, "chat", None) or getattr(client, "query", None)
-        if fn is None:
-            raise RuntimeError("Sphinx client has no chat/query method")
-        res = fn(question, dataset=df)
-        content = str(getattr(res, "content", res))
-        visualizations = getattr(res, "visualizations", [])
-        return AnalyzeResponse(content=content, visualizations=visualizations)
-
-    # Strategy B: sphinxai.chat top-level function
-    if hasattr(_sphinxai_sdk, "chat"):
-        # Some SDKs read the key from the env var directly
-        if SPHINX_API_KEY:
-            os.environ["SPHINX_API_KEY"] = SPHINX_API_KEY
-        res = _sphinxai_sdk.chat(question, df)
-        if isinstance(res, dict):
-            return AnalyzeResponse(
-                content=str(res.get("content", str(res))),
-                visualizations=res.get("visualizations", []),
-            )
-        return AnalyzeResponse(content=str(res))
-
-    raise RuntimeError("Unknown sphinxai SDK interface")
+def _sphinx_cli_available() -> bool:
+    """Return True if sphinx-cli is reachable."""
+    return shutil.which("sphinx-cli") is not None
 
 
-def _run_via_cli(question: str, df: pd.DataFrame) -> AnalyzeResponse:
-    """Fallback: invoke sphinx-cli as a subprocess."""
-    cli_path = shutil.which("sphinx-cli")
-    if cli_path is None:
-        raise RuntimeError("sphinx-cli not found in PATH")
+def _build_notebook(csv_path: str, file_name: str) -> nbformat.NotebookNode:
+    """Create a minimal .ipynb that loads the CSV into `df`."""
+    nb = nbformat.v4.new_notebook()
+    code = (
+        "import pandas as pd\n"
+        f"df = pd.read_csv(r'{csv_path}')\n"
+        f"# Source file: {file_name}\n"
+        "df.head()"
+    )
+    nb.cells.append(nbformat.v4.new_code_cell(source=code))
+    return nb
 
+
+def _run_via_cli(question: str, df: pd.DataFrame, file_name: str) -> AnalyzeResponse:
+    """
+    Execute sphinx-cli chat with a temporary notebook + CSV.
+    Auth is via SPHINX_API_KEY env var injected into subprocess.
+    """
+    if not _sphinx_cli_available():
+        raise RuntimeError("sphinx-cli is not installed or not in PATH")
     if not SPHINX_API_KEY:
-        raise RuntimeError("SPHINX_API_KEY is required but not set")
+        raise RuntimeError(
+            "SPHINX_API_KEY env var is required but not set. "
+            "Get your key at https://dashboard.prod.sphinx.ai"
+        )
 
-    # Write DataFrame to a temp CSV so the CLI can read it
-    tmp = tempfile.NamedTemporaryFile(suffix=".csv", delete=False, mode="w")
+    tmp_dir = tempfile.mkdtemp(prefix="datax_")
     try:
-        df.to_csv(tmp, index=False)
-        tmp.close()
+        # 1. Write CSV
+        csv_path = os.path.join(tmp_dir, file_name or "data.csv")
+        df.to_csv(csv_path, index=False)
 
+        # 2. Build notebook
+        nb = _build_notebook(csv_path, file_name or "data.csv")
+        nb_path = os.path.join(tmp_dir, "analysis.ipynb")
+        with open(nb_path, "w", encoding="utf-8") as f:
+            nbformat.write(nb, f)
+
+        # 3. Invoke sphinx-cli chat
         env = {**os.environ, "SPHINX_API_KEY": SPHINX_API_KEY}
         result = subprocess.run(
-            [cli_path, "--file", tmp.name, "--question", question],
+            [
+                "sphinx-cli", "chat",
+                "--notebook-filepath", nb_path,
+                "--prompt", question,
+            ],
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=180,
             env=env,
         )
 
         if result.returncode != 0:
+            stderr = result.stderr.strip() or "(no stderr)"
             raise RuntimeError(
-                f"sphinx-cli exited with code {result.returncode}: {result.stderr.strip()}"
+                f"sphinx-cli exited with code {result.returncode}: {stderr}"
             )
 
-        # Attempt to parse JSON output from stdout
+        stdout = result.stdout.strip()
+
+        # 4. Try to parse structured JSON from stdout
         try:
-            parsed = json.loads(result.stdout)
+            parsed = json.loads(stdout)
             return AnalyzeResponse(
-                content=str(parsed.get("content", result.stdout)),
+                content=str(parsed.get("content", stdout)),
                 visualizations=parsed.get("visualizations", []),
             )
         except json.JSONDecodeError:
-            # CLI returned plain text
-            return AnalyzeResponse(content=result.stdout.strip())
+            # CLI returned plain text — wrap it
+            return AnalyzeResponse(content=stdout)
+
     finally:
-        os.unlink(tmp.name)
-
-
-def run_sphinxai(question: str, df: pd.DataFrame) -> AnalyzeResponse:
-    """Unified entry-point: try SDK → CLI → error."""
-    errors: list[str] = []
-
-    # 1) Python SDK
-    if _sphinxai_sdk is not None:
-        try:
-            return _run_via_sdk(question, df)
-        except Exception as exc:
-            errors.append(f"SDK: {exc}")
-
-    # 2) CLI fallback
-    try:
-        return _run_via_cli(question, df)
-    except Exception as exc:
-        errors.append(f"CLI: {exc}")
-
-    # 3) Nothing worked
-    raise RuntimeError(
-        "SphinxAI is not available. Install the sphinxai Python package or "
-        "ensure sphinx-cli is in PATH. Errors: " + " | ".join(errors)
-    )
+        # Clean up temp files
+        import shutil as _shutil
+        _shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────
 
 @app.get("/health")
 def health_check():
-    """Simple liveness check."""
-    sphinx_available = (
-        _sphinxai_sdk is not None or shutil.which("sphinx-cli") is not None
-    )
+    """Liveness + readiness check."""
+    cli_ok = _sphinx_cli_available()
+    key_ok = bool(SPHINX_API_KEY)
     return {
         "ok": True,
-        "sphinx_available": sphinx_available,
+        "sphinx_available": cli_ok,
+        "sphinx_authenticated": cli_ok and key_ok,
         "max_rows": MAX_ROWS,
     }
 
@@ -196,7 +181,10 @@ def analyze(req: AnalyzeRequest):
         raise HTTPException(status_code=400, detail="Missing or empty 'question'.")
 
     if not req.data:
-        raise HTTPException(status_code=400, detail="'data' is required and must not be empty.")
+        raise HTTPException(
+            status_code=400,
+            detail="'data' is required and must not be empty.",
+        )
 
     if len(req.data) > MAX_ROWS:
         raise HTTPException(
@@ -217,9 +205,9 @@ def analyze(req: AnalyzeRequest):
             detail=f"Could not convert data to DataFrame: {exc}",
         )
 
-    # ── Execute SphinxAI ──────────────────────────────────────────────
+    # ── Execute SphinxAI via CLI ──────────────────────────────────────
     try:
-        return run_sphinxai(req.question, df)
+        return _run_via_cli(req.question, df, req.fileName or "data.csv")
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
     except Exception as exc:
