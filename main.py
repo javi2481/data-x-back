@@ -74,12 +74,29 @@ class AnalyzeResponse(BaseModel):
 
 def _setup_sphinx():
     """Configure sphinxai library pointing to OpenRouter's OpenAI-compatible API."""
-    # Prioritize OpenRouter if configured, otherwise fallback to Sphinx (useful for backwards compatibility)
-    api_key = OPENROUTER_API_KEY or SPHINX_API_KEY
-    if not api_key:
-        raise RuntimeError("Neither OPENROUTER_API_KEY nor SPHINX_API_KEY is set.")
+    # Attempt to find the API key in all possible variants
+    # Note: SPHINX_LLM_API_KEY is the internal name used by the library for OpenAI-format keys
+    openrouter_key = os.getenv("OPENROUTER_API_KEY")
+    sphinx_llm_key = os.getenv("SPHINX_LLM_API_KEY")
+    sphinx_api_key = os.getenv("SPHINX_API_KEY")
     
-    # We use the 'openai' provider format points to OpenRouter.
+    api_key = openrouter_key or sphinx_llm_key or sphinx_api_key
+    
+    if not api_key:
+        raise RuntimeError(
+            "No API Key found. Please set OPENROUTER_API_KEY, "
+            "SPHINX_LLM_API_KEY, or SPHINX_API_KEY in environment."
+        )
+    
+    # Log which variable we are using (safe for security as it doesn't log the value)
+    if openrouter_key:
+        logger.info("Using auth token from OPENROUTER_API_KEY")
+    elif sphinx_llm_key:
+        logger.info("Using auth token from SPHINX_LLM_API_KEY")
+    else:
+        logger.info("Using auth token from SPHINX_API_KEY")
+    
+    # We use the 'openai' provider format pointing to OpenRouter.
     # We explicitly map S/M/L tiers to minimax/minimax-m2.5.
     sphinxai.set_llm_config(
         provider="openai",
