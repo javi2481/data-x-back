@@ -202,30 +202,37 @@ async def analyze(req: AnalyzeRequest):
             timeout=60.0
         )
 
-        # ── Parse Response ──────────────────────────────────────────
+        # ── Parse and Re-encode for Lovable ──────────────────────────
+        # Lovable's Edge Function expects a "double-encoded" response:
+        # The 'content' field should be a JSON string containing {content, visualizations}.
+        
         try:
-            # Try plain parse
-            parsed = json.loads(response_text)
-            content = parsed.get("content", response_text)
-            visualizations = parsed.get("visualizations", [])
-        except json.JSONDecodeError:
-            # Try to extract JSON if encapsulated in code blocks or text
-            match = re.search(r"\{.*\}", response_text, re.DOTALL)
-            if match:
-                try:
-                    parsed = json.loads(match.group())
-                    content = parsed.get("content", response_text)
-                    visualizations = parsed.get("visualizations", [])
-                except:
-                    content = response_text
-                    visualizations = []
-            else:
-                content = response_text
-                visualizations = []
+            # 1. Try to extract clean JSON from LLM response
+            # (LLM might wrap it in ```json ... ```)
+            json_match = re.search(r"(\{.*\})", response_text, re.DOTALL)
+            clean_json_str = json_match.group(1) if json_match else response_text
+            
+            # 2. Validate it's valid JSON
+            parsed = json.loads(clean_json_str)
+            
+            # 3. Ensure we have the required structure
+            if "content" not in parsed:
+                parsed = {"content": response_text, "visualizations": []}
+            
+            # Return it stringified in the 'content' field
+            final_content = json.dumps(parsed)
+            
+        except Exception as exc:
+            # Fallback: if parsing fails, wrap the raw text
+            logger.warning(f"Failed to parse LLM response as JSON: {exc}")
+            final_content = json.dumps({
+                "content": response_text,
+                "visualizations": []
+            })
 
         return AnalyzeResponse(
-            content=content,
-            visualizations=visualizations,
+            content=final_content,
+            visualizations=[], # The Edge Function will populate this from 'content'
             isMock=False
         )
 
