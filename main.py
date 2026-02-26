@@ -72,11 +72,24 @@ class AnalyzeResponse(BaseModel):
 # ── Internal Helpers ──────────────────────────────────────────────────
 
 def _setup_sphinx():
-    """Configure sphinxai library with API key."""
+    """Configure sphinxai library with API key and server defaults."""
     if not SPHINX_API_KEY:
         raise RuntimeError("SPHINX_API_KEY is not set.")
     
-    # Configure the provider. Default is "sphinx" which uses the API key.
+    # The 'sphinx' provider in the sphinxai library requires SPHINX_SERVER 
+    # and SPHINX_LIBRARY_TOKEN env vars. We provide defaults if missing.
+    if not os.getenv("SPHINX_SERVER"):
+        os.environ["SPHINX_SERVER"] = "https://api.prod.sphinx.ai"
+        logger.info("Providing default SPHINX_SERVER: https://api.prod.sphinx.ai")
+        
+    if not os.getenv("SPHINX_LIBRARY_TOKEN"):
+        os.environ["SPHINX_LIBRARY_TOKEN"] = SPHINX_API_KEY
+        # No logger for token for security
+    
+    # Reload the library config to pick up the new env vars
+    sphinxai.reset_config()
+    
+    # Also explicitly set the LLM config (redundant but safe)
     sphinxai.set_llm_config(provider="sphinx", api_key=SPHINX_API_KEY)
 
 
