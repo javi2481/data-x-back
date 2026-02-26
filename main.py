@@ -114,7 +114,7 @@ def _setup_sphinx():
         provider="openai",
         api_key=api_key,
         base_url="https://openrouter.ai/api/v1",
-        model="text-embedding-3-small"
+        models={"S": "text-embedding-3-small"}
     )
 
 
