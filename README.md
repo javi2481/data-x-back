@@ -152,37 +152,30 @@ El frontend / edge function debe:
 
 ## SphinxAI — Estrategia de integración
 
-El backend usa **`sphinx-cli`** (`pip install sphinx-ai-cli`) como motor de análisis:
+El backend utiliza la librería de Python **`sphinxai`** directamente para realizar el análisis de datos.
 
-1. Los datos del request se escriben a un CSV temporal.
-2. Se crea un `.ipynb` mínimo que carga ese CSV en un DataFrame.
-3. Se invoca `sphinx-cli chat --notebook-filepath <nb> --prompt <question>` con `SPHINX_API_KEY` inyectado en el entorno del subproceso (nunca impreso en logs).
-4. Se parsea el stdout y se normaliza al schema `{ content, visualizations, isMock }`.
+1. Los datos recibidos en el request se convierten a un `pandas.DataFrame`.
+2. Se genera un prompt que incluye tanto la pregunta del usuario como una muestra representativa de los datos (contexto).
+3. Se invoca el motor de Sphinx AI mendiante `await sphinxai.llm(prompt, model_size="M")`.
+4. El backend normaliza la respuesta al esquema `{ content, visualizations, isMock }` requerido por el frontend Lovable.
 
-Para verificar que el CLI está disponible:
-
-```bash
-sphinx-cli -h
-```
-
-> **Ref:** [docs.sphinx.ai/cli-documentation/installation](https://docs.sphinx.ai/cli-documentation/installation)
+Esta arquitectura es más eficiente que el uso del CLI, ya que elimina la necesidad de gestionar servidores de Jupyter internos y entornos Nodeenv complejos en el contenedor.
 
 ---
 
 ## Evidence
 
-> Verificación local ejecutada el 2026-02-25 con `sphinx-ai-cli` v1.0.6 instalado.
+> Verificación local ejecutada el 2026-02-25 con la librería `sphinxai` integrada.
 
 ### `GET /health`
 
 ```
 $ curl http://localhost:8000/health
 
-{"ok":true,"sphinx_available":true,"sphinx_authenticated":false,"max_rows":5000}
+{"ok":true,"library":"sphinxai","authenticated":false,"max_rows":5000}
 ```
 
-> `sphinx_available: true` confirma que `sphinx-cli` está en PATH.
-> `sphinx_authenticated: false` porque `SPHINX_API_KEY` no está seteada en este entorno de prueba.
+> `authenticated: false` en local porque la variable `SPHINX_API_KEY` no se incluyó en las pruebas locales. En Railway, debe estar configurada en las Variables de Entorno.
 
 ### `POST /analyze` — error 400 (question vacía)
 
@@ -192,21 +185,13 @@ $ curl -X POST http://localhost:8000/analyze -H "Content-Type: application/json"
 HTTP 400 → {"detail":"Missing or empty 'question'."}
 ```
 
-### `POST /analyze` — error 400 (data vacío)
-
-```
-$ curl -X POST http://localhost:8000/analyze -H "Content-Type: application/json" -d '{"question":"test","data":[]}'
-
-HTTP 400 → {"detail":"'data' is required and must not be empty."}
-```
-
 ### `POST /analyze` — error 500 (SPHINX_API_KEY no seteada)
 
 ```
 $ curl -X POST http://localhost:8000/analyze -H "Content-Type: application/json" \
   -d '{"question":"avg sales?","data":[{"producto":"A","ventas":100},{"producto":"B","ventas":250}]}'
 
-HTTP 500 → {"detail":"SPHINX_API_KEY env var is required but not set. Get your key at https://dashboard.prod.sphinx.ai"}
+HTTP 500 → {"detail":"SPHINX_API_KEY is not configured on the server."}
 ```
 
-> **En producción** (Railway con `SPHINX_API_KEY` configurada), `/analyze` ejecuta el análisis completo y devuelve `{ content, visualizations, isMock: false }`.
+> **En producción** (Railway con `SPHINX_API_KEY` configurada), el endpoint devuelve la respuesta de análisis real del LLM de Sphinx.
