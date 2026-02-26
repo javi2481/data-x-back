@@ -18,6 +18,7 @@ import logging
 import traceback
 from typing import Any, Dict, List, Optional
 
+import numpy as np
 import pandas as pd
 import sphinxai
 from dotenv import load_dotenv
@@ -64,6 +65,12 @@ class AnalyzeRequest(BaseModel):
     data: List[Dict[str, Any]]
     columns: Optional[List[str]] = None
     fileName: Optional[str] = None
+    model_size: Optional[str] = "M"  # Default to Balanced
+
+
+class SemanticRequest(BaseModel):
+    query: str
+    data: List[Dict[str, Any]]
 
 
 class AnalyzeResponse(BaseModel):
@@ -90,25 +97,24 @@ def _setup_sphinx():
             "SPHINX_LLM_API_KEY, or SPHINX_API_KEY in environment."
         )
     
-    # Log which variable we are using (safe for security as it doesn't log the value)
-    if openrouter_key:
-        logger.info("Using auth token from OPENROUTER_API_KEY")
-    elif sphinx_llm_key:
-        logger.info("Using auth token from SPHINX_LLM_API_KEY")
-    else:
-        logger.info("Using auth token from SPHINX_API_KEY")
-    
-    # We use the 'openai' provider format pointing to OpenRouter.
-    # We explicitly map S/M/L tiers to minimax/minimax-m2.5.
+    # Configure LLM with tiers
     sphinxai.set_llm_config(
-        provider="openai",
+        provider="openai", # OpenRouter uses OpenAI format
         api_key=api_key,
         base_url="https://openrouter.ai/api/v1",
         models={
-            "S": "minimax/minimax-m2.5",
-            "M": "minimax/minimax-m2.5",
-            "L": "minimax/minimax-m2.5"
+            "S": "google/gemini-2.0-flash-lite-preview-02-05", # Fast (User suggested flash-lite)
+            "M": "google/gemini-2.0-flash",                   # Balanced
+            "L": "google/gemini-2.0-pro-exp-02-05"            # Deep (User suggested gemini-2.5 pro, using latest stable/exp)
         }
+    )
+    
+    # Configure Embeddings
+    sphinxai.set_embedding_config(
+        provider="openai",
+        api_key=api_key,
+        base_url="https://openrouter.ai/api/v1",
+        model="text-embedding-3-small"
     )
 
 
@@ -131,25 +137,8 @@ async def analyze(req: AnalyzeRequest):
     # ── Validation ────────────────────────────────────────────────────
     if not req.question or not req.question.strip():
         raise HTTPException(status_code=400, detail="Missing or empty 'question'.")
-
     if not req.data:
-        raise HTTPException(
-            status_code=400,
-            detail="'data' is required and must not be empty.",
-        )
-
-    if len(req.data) > MAX_ROWS:
-        raise HTTPException(
-            status_code=413,
-            detail=f"Payload exceeds limit ({MAX_ROWS} rows).",
-        )
-
-    # ── Auth Check ────────────────────────────────────────────────────
-    if not SPHINX_API_KEY:
-        raise HTTPException(
-            status_code=500,
-            detail="SPHINX_API_KEY is not configured on the server.",
-        )
+        raise HTTPException(status_code=400, detail="'data' is required.")
 
     # ── Data Processing ───────────────────────────────────────────────
     try:
@@ -159,24 +148,20 @@ async def analyze(req: AnalyzeRequest):
             if available:
                 df = df[available]
     except Exception as exc:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Data conversion error: {exc}",
-        )
+        raise HTTPException(status_code=400, detail=f"Data conversion error: {exc}")
 
     # ── SphinxAI Analysis ─────────────────────────────────────────────
     try:
         _setup_sphinx()
         
-        # Build prompt with data context. 
-        # For small enough datasets, we can include more info.
-        # For very large ones, we'd ideally use a different RAG pattern, 
-        # but here we keep it simple as a library replacement.
-        data_context = df.to_string(index=False, max_rows=20) # Sample 20 rows
+        # Enriched prompt with describe() and more context
+        data_context = df.to_string(index=False, max_rows=100)
+        stats = df.describe().to_string()
         
         prompt = (
             f"Question: {req.question}\n\n"
             f"Data Context (sample of {len(req.data)} rows from {req.fileName or 'dataset'}):\n{data_context}\n\n"
+            f"Statistics Summary:\n{stats}\n\n"
             "INSTRUCTIONS:\n"
             "1. Analyze the data and answer the question.\n"
             "2. If appropriate, create one or more visualizations using Vega-Lite schema.\n"
@@ -190,55 +175,108 @@ async def analyze(req: AnalyzeRequest):
             "    }\n"
             "  ]\n"
             "}\n"
-            "If no visualization is needed, return an empty array for \"visualizations\"."
+            "If no visualization is needed, return [] for \"visualizations\"."
         )
 
-        logger.info(f"Submitting to sphinxai.llm: question='{req.question[:50]}...'")
+        logger.info(f"Submitting to sphinxai.llm (Tier: {req.model_size}): {req.question[:50]}...")
         
-        # Call the library
         response_text = await sphinxai.llm(
             prompt=prompt,
-            model_size="M",
-            timeout=60.0
+            model_size=req.model_size or "M",
+            timeout=90.0
         )
 
         # ── Parse and Re-encode for Lovable ──────────────────────────
-        # Lovable's Edge Function expects a "double-encoded" response:
-        # The 'content' field should be a JSON string containing {content, visualizations}.
-        
         try:
-            # 1. Try to extract clean JSON from LLM response
-            # (LLM might wrap it in ```json ... ```)
             json_match = re.search(r"(\{.*\})", response_text, re.DOTALL)
             clean_json_str = json_match.group(1) if json_match else response_text
-            
-            # 2. Validate it's valid JSON
             parsed = json.loads(clean_json_str)
-            
-            # 3. Ensure we have the required structure
             if "content" not in parsed:
                 parsed = {"content": response_text, "visualizations": []}
-            
-            # Return it stringified in the 'content' field
             final_content = json.dumps(parsed)
-            
-        except Exception as exc:
-            # Fallback: if parsing fails, wrap the raw text
-            logger.warning(f"Failed to parse LLM response as JSON: {exc}")
-            final_content = json.dumps({
-                "content": response_text,
-                "visualizations": []
-            })
+        except Exception:
+            final_content = json.dumps({"content": response_text, "visualizations": []})
 
-        return AnalyzeResponse(
-            content=final_content,
-            visualizations=[], # The Edge Function will populate this from 'content'
-            isMock=False
-        )
+        return AnalyzeResponse(content=final_content, isMock=False)
 
     except Exception as exc:
         logger.error(f"SphinxAI Error: {traceback.format_exc()}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Analysis failed: {str(exc)}",
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(exc)}")
+
+
+@app.post("/analyze/deep", response_model=AnalyzeResponse)
+async def deep_analyze(req: AnalyzeRequest):
+    """Deep analysis using batch_llm to process multiple aspects in parallel."""
+    try:
+        _setup_sphinx()
+        df = pd.DataFrame(req.data)
+        
+        sub_questions = [
+            f"Describe la distribución de cada columna numérica basándote en estas estadísticas:\n{df.describe()}",
+            f"Identifica outliers y anomalías en esta muestra de datos:\n{df.to_string(max_rows=50)}",
+            f"Encuentra correlaciones interesantes entre las columnas del dataset.",
+            f"Identifica tendencias temporales si hay columnas que parezcan fechas.",
+            f"Proporciona 3 recomendaciones accionables basadas en los insights del negocio encontrados."
+        ]
+        
+        logger.info("Starting Parallel Batch Analysis (5 tasks)...")
+        results = await sphinxai.batch_llm(
+            sub_questions,
+            model_size="M",
+            max_concurrent=5
         )
+        
+        # Consolidation step
+        logger.info("Consolidating batch results into Executive Report...")
+        consolidated_prompt = (
+            f"Consolida estos análisis individuales sobre el archivo {req.fileName or 'dataset'} en un reporte ejecutivo estructurado en markdown:\n\n"
+            f"{chr(10).join(results)}\n\n"
+            "IMPORTANTE: El reporte debe ser coherente, evitar redundancias y terminar con una sección de conclusiones."
+        )
+        
+        final_report = await sphinxai.llm(consolidated_prompt, model_size="L")
+        
+        # Wrap for Lovable
+        final_content = json.dumps({
+            "content": final_report,
+            "visualizations": [] # Batch consolidation usually doesn't return unified charts yet
+        })
+        
+        return AnalyzeResponse(content=final_content, isMock=False)
+
+    except Exception as exc:
+        logger.error(f"Deep Analysis Error: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Deep analysis failed: {str(exc)}")
+
+
+@app.post("/analyze/semantic")
+async def semantic_search(req: SemanticRequest):
+    """Semantic search over data rows using embeddings."""
+    try:
+        _setup_sphinx()
+        
+        # Vectorize text representation of each row
+        texts = [json.dumps(row) for row in req.data]
+        logger.info(f"Generating embeddings for {len(texts)} rows...")
+        
+        embeddings = await sphinxai.batch_embed_text(texts, model_size="S")
+        query_embedding = await sphinxai.embed_text(req.query, model_size="S")
+        
+        # Calculate cosine similarity using numpy
+        # Note: We assume embeddings are normalized (standard for OpenAI/OpenRouter)
+        embeddings_np = np.array(embeddings)
+        query_np = np.array(query_embedding)
+        
+        similarities = np.dot(embeddings_np, query_np)
+        top_indices = np.argsort(similarities)[-10:][::-1]
+        
+        results = [
+            {"row": req.data[i], "score": float(similarities[i])} 
+            for i in top_indices if i < len(req.data)
+        ]
+        
+        return {"results": results}
+
+    except Exception as exc:
+        logger.error(f"Semantic Search Error: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Semantic search failed: {str(exc)}")
