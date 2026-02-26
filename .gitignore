@@ -1,0 +1,15 @@
+# Entornos virtuales
+venv/
+.venv/
+
+# Variables de entorno locales
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE
+.vscode/
+.idea/
