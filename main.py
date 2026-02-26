@@ -30,6 +30,7 @@ load_dotenv()
 MAX_ROWS: int = int(os.getenv("MAX_ROWS", "5000"))
 CORS_ORIGINS: str = os.getenv("CORS_ORIGINS", "*")
 SPHINX_API_KEY: Optional[str] = os.getenv("SPHINX_API_KEY")
+OPENROUTER_API_KEY: Optional[str] = os.getenv("OPENROUTER_API_KEY")
 
 logger = logging.getLogger("datax")
 logging.basicConfig(level=logging.INFO)
@@ -72,17 +73,23 @@ class AnalyzeResponse(BaseModel):
 # ── Internal Helpers ──────────────────────────────────────────────────
 
 def _setup_sphinx():
-    """Configure sphinxai library pointing to Sphinx's OpenAI-compatible API."""
-    if not SPHINX_API_KEY:
-        raise RuntimeError("SPHINX_API_KEY is not set.")
+    """Configure sphinxai library pointing to OpenRouter's OpenAI-compatible API."""
+    # Prioritize OpenRouter if configured, otherwise fallback to Sphinx (useful for backwards compatibility)
+    api_key = OPENROUTER_API_KEY or SPHINX_API_KEY
+    if not api_key:
+        raise RuntimeError("Neither OPENROUTER_API_KEY nor SPHINX_API_KEY is set.")
     
-    # We use the 'openai' provider format because it uses standard Bearer auth
-    # and REST/JSON endpoints, which is the standard for external API keys.
-    # Sphinx's API server supports this at /v1.
+    # We use the 'openai' provider format points to OpenRouter.
+    # We explicitly map S/M/L tiers to minimax/minimax-m2.5.
     sphinxai.set_llm_config(
         provider="openai",
-        api_key=SPHINX_API_KEY,
-        base_url="https://api.prod.sphinx.ai/v1"
+        api_key=api_key,
+        base_url="https://openrouter.ai/api/v1",
+        models={
+            "S": "minimax/minimax-m2.5",
+            "M": "minimax/minimax-m2.5",
+            "L": "minimax/minimax-m2.5"
+        }
     )
 
 
@@ -94,7 +101,8 @@ def health_check():
     return {
         "ok": True,
         "library": "sphinxai",
-        "authenticated": bool(SPHINX_API_KEY),
+        "authenticated": bool(OPENROUTER_API_KEY or SPHINX_API_KEY),
+        "using": "openrouter" if OPENROUTER_API_KEY else "sphinx",
         "max_rows": MAX_ROWS,
     }
 
