@@ -103,9 +103,9 @@ def _setup_sphinx():
         api_key=api_key,
         base_url="https://openrouter.ai/api/v1",
         models={
-            "S": "google/gemini-2.0-flash-lite-preview-02-05", # Fast (User suggested flash-lite)
-            "M": "google/gemini-2.0-flash",                   # Balanced
-            "L": "google/gemini-2.0-pro-exp-02-05"            # Deep (User suggested gemini-2.5 pro, using latest stable/exp)
+            "S": "google/gemini-2.0-flash-lite-001", # Confirmed ID for Lite
+            "M": "google/gemini-2.0-flash-001",      # Confirmed ID for Flash
+            "L": "google/gemini-2.5-pro"             # Highest reasoning (or gemini-2.5-pro-exp-03-25)
         }
     )
     
