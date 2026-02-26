@@ -72,25 +72,18 @@ class AnalyzeResponse(BaseModel):
 # ── Internal Helpers ──────────────────────────────────────────────────
 
 def _setup_sphinx():
-    """Configure sphinxai library with API key and server defaults."""
+    """Configure sphinxai library pointing to Sphinx's OpenAI-compatible API."""
     if not SPHINX_API_KEY:
         raise RuntimeError("SPHINX_API_KEY is not set.")
     
-    # The 'sphinx' provider in the sphinxai library requires SPHINX_SERVER 
-    # and SPHINX_LIBRARY_TOKEN env vars. We provide defaults if missing.
-    if not os.getenv("SPHINX_SERVER"):
-        os.environ["SPHINX_SERVER"] = "https://api.prod.sphinx.ai"
-        logger.info("Providing default SPHINX_SERVER: https://api.prod.sphinx.ai")
-        
-    if not os.getenv("SPHINX_LIBRARY_TOKEN"):
-        os.environ["SPHINX_LIBRARY_TOKEN"] = SPHINX_API_KEY
-        # No logger for token for security
-    
-    # Reload the library config to pick up the new env vars
-    sphinxai.reset_config()
-    
-    # Also explicitly set the LLM config (redundant but safe)
-    sphinxai.set_llm_config(provider="sphinx", api_key=SPHINX_API_KEY)
+    # We use the 'openai' provider format because it uses standard Bearer auth
+    # and REST/JSON endpoints, which is the standard for external API keys.
+    # Sphinx's API server supports this at /v1.
+    sphinxai.set_llm_config(
+        provider="openai",
+        api_key=SPHINX_API_KEY,
+        base_url="https://api.prod.sphinx.ai/v1"
+    )
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────
