@@ -1,0 +1,144 @@
+# Project Policies
+
+## Project Context
+
+Data-X is a product with:
+
+- **backend en FastAPI**
+- **frontend dashboard**
+- **Sphinx** as the analysis engine
+- Goal: **migrate and eliminate Lovable edge functions**, reabsorbing that logic into the own backend.
+
+## Architectural Goal
+
+The goal is to build a **productive, maintainable, and reliable architecture**.
+
+- **FastAPI is the central orchestration layer**.
+- **Sphinx must be integrated behind a backend adapter/provider**.
+- **Business logic must not remain in the frontend or edge functions**.
+- **MCP servers are tools for development, inspection, validation, and testing**, not part of the production runtime.
+- **All important inputs and outputs must pass through explicit contracts and validation**.
+
+---
+
+## MCP Servers Usage Policy
+
+**Principal Policy**: Always use MCP (Model Context Protocol) servers to enhance code quality, information retrieval, and system verification.
+
+### 1. Filesystem MCP
+
+Use for:
+
+- Inspecting project structure.
+- Reading and editing repo files.
+- Reviewing configuration, prompts, adapters, schemas, and logs.
+
+Restrictions:
+
+- Only within authorized directories.
+- No accessing secrets or credentials unless strictly necessary.
+- Do not modify files outside the scope of the current task.
+- No risky deletions or overwrites without clear justification.
+
+### 2. HTTP MCP
+
+Use for:
+
+- Verifying FastAPI backend endpoints.
+- Testing `/health`.
+- Running smoke tests.
+- Validating real HTTP contracts.
+- Checking that the frontend can migrate from edge functions to the backend.
+
+### 3. Python MCP
+
+Use for:
+
+- Prototyping Sphinx / sphinxai integration.
+- Validating structured outputs.
+- Testing parsers, adapters, and schemas.
+- Reproducing errors and generating validation scripts.
+
+---
+
+## Lovable Edge Functions Migration Rule
+
+1. **Identify responsibility** (inputs, outputs, dependencies, Sphinx calls, auth).
+2. **Design replacement in FastAPI** (equivalent endpoint, internal service, schema, error strategy).
+3. **Validate** (test endpoint with HTTP MCP, verify contract).
+4. **Obsolete** the edge function only after validation.
+
+---
+
+## Sphinx Integration Policy
+
+- Integrate Sphinx only through a backend abstraction.
+- Do not couple the domain to the raw engine format.
+- Define input and output schemas.
+- Validate structured outputs before accepting them.
+
+---
+
+## Mandatory Operating Principles
+
+- Think in **productive architecture**.
+- Prefer **own backend** over logic dispersed in external tools.
+- Do not propose fragile or "magical" solutions.
+- Distinguish between **prototype**, **dev tooling**, and **production implementation**.
+
+---
+
+## Shared Project Context
+
+We are migrating **Data-X** towards an architecture where:
+
+- the **FastAPI backend** will be the only orchestration and analysis layer
+- **Sphinx** will be the analysis engine behind a backend abstraction
+- the **frontend dashboard** will no longer depend on Lovable edge functions
+- the `sphinx-analyze` edge function must be made obsolete and then eliminated
+- the frontend must call the Railway-deployed backend **directly**
+- implementation must prioritize **productive architecture**, not temporary patches
+
+### Mandatory Principles
+
+- Do not leave critical logic in the frontend or in edge functions.
+- Do not couple the domain to the raw response format of Sphinx.
+- All Sphinx integration must pass through a **backend provider/adapter**.
+- All important input and output must have **schemas and validation**.
+- The backend must return a final, stable, and ready-to-render contract to the frontend.
+- If in doubt between "quick solution" and "correct architecture", prioritize correct architecture.
+
+### Target Functional Contract
+
+The system must support these backend endpoints:
+
+- `POST /analyze`
+- `POST /analyze/deep`
+- `POST /analyze/semantic`
+
+The frontend will send:
+
+- `question`
+- `data`
+- `columns`
+- `fileName`
+- `modelSize`
+- `mode`
+
+The backend must handle:
+
+- preprocessing and smart sampling
+- language localization / instruction wrapping
+- calling Sphinx
+- response normalization
+- visualizations in frontend-compatible format
+- sections in deep mode
+- controlled fallback
+- useful technical metadata
+
+### Agent Working Rules
+
+- **Antigravity** defines contracts, backend, services, schemas, and migration strategy.
+- **Lovable** adapts the frontend to the backend contract and eliminates edge function dependencies.
+- Neither should invent different contracts without aligning with the other first.
+- If a problem is detected in the contract, an explicit adjustment must be proposed before implementing anything incompatible.
