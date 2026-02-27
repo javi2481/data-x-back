@@ -77,6 +77,26 @@ def run_tests():
     else:
         print(r.text)
 
+    # 3.b Standard Analysis (Raw Data Only - No Frontend Stats)
+    print("\n[*] Test 3.b: Standard Analysis with RAW Data Only (Backend calculates stats internally)")
+    payload_raw = {
+        "question": "What is the average price?",
+        "data": data_payload,
+        "fileName": "raw_test.csv"
+    }
+    
+    t0 = time.time()
+    r = requests.post(f"{base_url}/analyze", json=payload_raw)
+    print(f"  Status: {r.status_code} - Time: {time.time()-t0:.2f}s")
+    if r.status_code == 200:
+        resp = r.json()
+        print(f"  [Output Validations]")
+        parsed_content = json.loads(resp.get('content', '{}'))
+        text_content = parsed_content.get('content', '')
+        print(f"  - Backend processed raw data successfully. Content length: {len(text_content)} chars")
+    else:
+        print(r.text)
+
     # 4. Deep Analysis
     print("\n[*] Test 4: Deep Analysis (/analyze/deep) for Exec Reports and Markdown Sections")
     payload_deep = {
