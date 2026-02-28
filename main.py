@@ -120,9 +120,12 @@ def _setup_sphinx():
         api_key=api_key,
         base_url="https://openrouter.ai/api/v1",
         models={
-            "S": "google/gemini-2.0-flash-lite-001", # Confirmed ID for Lite
-            "M": "google/gemini-2.0-flash-001",      # Confirmed ID for Flash
-            "L": "google/gemini-2.5-pro"             # Highest reasoning (or gemini-2.5-pro-exp-03-25)
+            "ROUTER_PLANNER_COMPLEX": "anthropic/claude-3.7-sonnet", # Deep reasoning 
+            "ROUTER_PLANNER_FAST": "google/gemini-2.5-pro",          # Fast planning
+            "ROUTER_EXEC_BATCH": "google/gemini-2.0-flash-001",      # Concurrent code gen
+            "ROUTER_EXEC_SURGEON": "anthropic/claude-3.5-sonnet",    # Complex code gen
+            "ROUTER_AUDITOR_FAST": "qwen/qwen3.5-flash-02-23",       # Cheap & fast guardrail
+            "ROUTER_SMART_FIXER": "openai/gpt-4.5-preview"           # Self-correction king
         }
     )
     

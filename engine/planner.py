@@ -1,9 +1,12 @@
 import json
 import uuid
+import re
 from typing import Dict, Any, List
-# from sphinxai import llm # Se usará Sphinx nativo aquí en el futuro real
+
+import sphinxai
 from .contracts import AnalysisRequest, AnalysisPlanResponse, PlanStep
 from .context_builder import context_builder
+from .model_router import model_router
 import logging
 
 logger = logging.getLogger(__name__)
@@ -38,34 +41,40 @@ class Planner:
         
         full_system_prompt = f"{planning_context}\n\n{json_schema_prompt}"
 
-        # 3. Llamada al motor Sphinx (Mockeado momentáneamente para estructurar el backend, luego se usa sphinxai.llm())
-        # En el código final esto sería: response = await sphinxai.llm(prompt=request.query, system=full_system_prompt, format="json")
-        logger.debug(f"Prompt enviado a Sphinx (Simulado):\n{full_system_prompt}")
+        # 3. Elección Dinámica del Modelo Planificador
+        planner_model = model_router.get_planner_model(request)
         
-        # FIXME: Reemplazar este mock fijo con la llamada real a la librería sphinxai
-        mocked_sphinx_response = {
-            "profile_summary": f"Dataset de {request.dataset_metadata.total_rows} filas con columnas {request.dataset_metadata.columns}",
-            "hypothesis": ["Existen valores atípicos", "Existen tendencias temporales"],
-            "steps": [
-                {"step_number": 1, "description": f"Limpieza de datos y casting tipo según {request.dataset_metadata.dtypes}", "expected_artifact": "df_cleaned"},
-                {"step_number": 2, "description": f"Análisis y agrupación para responder a: {request.query}", "expected_artifact": "df_grouped"},
-                {"step_number": 3, "description": "Generación de gráfico o reporte final", "expected_artifact": "final_visualization.png"}
-            ],
-            "warnings": ["La muestra provista es pequeña", "Verificar posibles nulos en la ejecución"],
-            "estimated_complexity": "Media"
-        }
+        # 4. Llamada REAL al motor Sphinx
+        logger.debug(f"Prompt enviado a Sphinx (Modelo: {planner_model}):\n{full_system_prompt[:200]}...")
+        
+        try:
+            response_text = await sphinxai.llm(
+                prompt=request.query, 
+                system=full_system_prompt, 
+                model_size=planner_model,
+                timeout=120.0 # Planning can take a while 
+            )
+            
+            # Limpiar posible markdown en la respuesta
+            json_match = re.search(r"(\{.*\})", response_text, re.DOTALL)
+            clean_json_str = json_match.group(1) if json_match else response_text
+            parsed_response = json.loads(clean_json_str)
 
-        # 4. Parsear y Validar con el Contrato Pydantic
-        steps = [PlanStep(**step_data) for step_data in mocked_sphinx_response["steps"]]
-        
-        plan_response = AnalysisPlanResponse(
-            analysis_id=str(uuid.uuid4()), # Generamos un ID de análisis único para la persistencia futura
-            profile_summary=mocked_sphinx_response["profile_summary"],
-            hypothesis=mocked_sphinx_response["hypothesis"],
-            steps=steps,
-            warnings=mocked_sphinx_response["warnings"],
-            estimated_complexity=mocked_sphinx_response["estimated_complexity"]
-        )
+            # 5. Parsear y Validar con el Contrato Pydantic
+            steps = [PlanStep(**step_data) for step_data in parsed_response.get("steps", [])]
+            
+            plan_response = AnalysisPlanResponse(
+                analysis_id=str(uuid.uuid4()), # Generamos un ID de análisis único para la persistencia futura
+                profile_summary=parsed_response.get("profile_summary", "Diagnóstico no provisto"),
+                hypothesis=parsed_response.get("hypothesis", []),
+                steps=steps,
+                warnings=parsed_response.get("warnings", []),
+                estimated_complexity=parsed_response.get("estimated_complexity", "Media")
+            )
+            
+        except Exception as e:
+            logger.error(f"Falla grave al planificar con el modelo {planner_model}: {e}\nResponse: {response_text if 'response_text' in locals() else 'N/A'}")
+            raise RuntimeError(f"El LLM Planificador falló: {e}")
 
         logger.info(f"Plan generado exitosamente con ID: {plan_response.analysis_id} y {len(plan_response.steps)} pasos.")
         return plan_response

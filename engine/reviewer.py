@@ -2,6 +2,7 @@ import logging
 from typing import Dict, Any, List
 from .contracts import AnalysisArtifact
 import sphinxai
+from .model_router import model_router
 
 logger = logging.getLogger(__name__)
 
@@ -39,8 +40,8 @@ class Reviewer:
             "Responde ÚNICAMENTE con la palabra 'APPROVE' si es seguro, o 'REJECT: <Razón breve>' si es inseguro."
         )
         try:
-            # We use a smaller, faster model for checking (M)
-            judge_response = await sphinxai.llm(judge_prompt, model_size="M")
+            auditor_model = model_router.get_reviewer_model()
+            judge_response = await sphinxai.llm(judge_prompt, model_size=auditor_model)
             if judge_response.strip().startswith("APPROVE"):
                 return {"approved": True, "reason": "Auditoría determinística y semántica superadas."}
             else:

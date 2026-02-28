@@ -12,6 +12,7 @@ from .contracts import ExecuteRequest, AnalysisRequest, AnalysisArtifact, Execut
 from .context_builder import context_builder
 from .reviewer import reviewer
 from .result_formatter import result_formatter
+from .model_router import model_router
 
 logger = logging.getLogger(__name__)
 
@@ -39,10 +40,18 @@ class Executor:
             
         logger.info(f"Enviando {len(step_prompts)} prompts a sphinxai.batch_llm para generación concurrente.")
         
-        # 2. Llamada REAl concurrente al LLM usando SphinxAI (Fase 1: Motor Real)
+        # 2. Elegir el modelo adecuado para ejecución generica/batch (La mayoría de los pasos)
+        # Podríamos rutear cada paso si sphinxai soportara batch mixto, 
+        # pero usamos el Batch Executor general para la cola principal.
+        exec_model = "ROUTER_EXEC_BATCH" 
+        for step in exec_req.approved_plan.steps:
+            if model_router.get_executor_model(step.description) == "ROUTER_EXEC_SURGEON":
+                exec_model = "ROUTER_EXEC_SURGEON" # Upgrade whole batch to Surgeon if needed
+                break
+                
+        logger.info(f"Llamada concurrente usando el Ejecutor: {exec_model}")
         try:
-            # We use model_size L for execution precision
-            generated_codes = await sphinxai.batch_llm(step_prompts, model_size="L")
+            generated_codes = await sphinxai.batch_llm(step_prompts, model_size=exec_model)
         except Exception as e:
             logger.error(f"Fallo grave en generacion de código SphinxAI: {e}")
             return ExecutionResult(
@@ -93,7 +102,8 @@ class Executor:
                         "Por favor, devuelve ÚNICAMENTE el código Python corregido sin explicaciones."
                     )
                     logger.info(f"Lanzando Self-Correction Loop para paso {step.step_number}...")
-                    corrected_code_raw = await sphinxai.llm(fix_prompt, model_size="L")
+                    fixer_model = model_router.get_fixer_model()
+                    corrected_code_raw = await sphinxai.llm(fix_prompt, model_size=fixer_model)
                     current_code = self._clean_llm_code(corrected_code_raw)
                 else:
                     error_msg = f"Paso {step.step_number} falló tras {max_retries} intentos de corrección. Error: {exec_err}"
