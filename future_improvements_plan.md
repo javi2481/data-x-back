@@ -14,12 +14,12 @@ El objetivo de esta fase es que el backend entregue inteligencia verdadera y con
 2.  **Entorno de Ejecución Seguro (Crítico / Prerequisito)**
     - **Acción:** Definir e implementar el aislamiento para la ejecución del código Python generado por el agente (ej. proceso aislado, contenedor efímero tipo Docker, filesystem restringido, timeouts, límites de memoria).
     - **Impacto:** Si vamos a ejecutar código generado por IA, el aislamiento no es una mejora futura, es una obligación de diseño del núcleo del sistema.
-3.  **Self-Correction Loop (Prioridad Alta)**
-    - **Acción:** En `executor.py`, si la ejecución del código falla (StackTrace Error), el motor auto-envía ese error al LLM para que corrija su propio código (con un límite de intentos, ej. 3) antes de fallarle al usuario.
-    - **Impacto:** Menos fallos duros, mejor tasa de éxito y sensación de "inteligencia real" y autonomía agéntica.
-4.  **Reviewer Híbrido (Prioridad Alta)**
+3.  **Reviewer Híbrido (Prioridad Alta)**
     - **Acción:** En `reviewer.py`, mantener las _reglas determinísticas_ duras (ej. prohibir `os.system`, bloqueo de red) pero sumar una capa semántica de _LLM-as-a-judge_ que evalúe si el código cumple exactamente el intent o asume cosas riesgosas.
-    - **Impacto:** Máxima confiabilidad. Lo determinístico frena lo catastrófico rápido; el Juez LLM frena las alucinaciones lógicas sutiles.
+    - **Impacto:** Máxima confiabilidad. Lo determinístico frena lo catastrófico rápido; el Juez LLM frena las alucinaciones lógicas sutiles y previene que código inseguro entre al entorno de ejecución.
+4.  **Self-Correction Loop (Prioridad Alta)**
+    - **Acción:** En `executor.py`, si la ejecución del código falla (StackTrace Error), el motor auto-envía ese error al LLM para que corrija su propio código (con un límite de intentos, ej. 3) antes de fallarle al usuario.
+    - **Impacto:** Menos fallos duros, mejor tasa de éxito y sensación de "inteligencia real". Al estar detrás del reviewer, los ciclos de corrección son seguros.
 
 ## Fase 2 — Producto Usable (Prioridad Alta)
 
