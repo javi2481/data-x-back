@@ -272,14 +272,18 @@ async def analyze_plan(req: AnalyzeRequest):
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Data parsing error: {exc}")
 
+        analysis_id = str(uuid.uuid4())
+        
+        # Save exact dataset to local temporal vault for future secure execution
+        dataset_path = os.path.join(os.getcwd(), "_datasets", f"{analysis_id}.csv")
+        df.to_csv(dataset_path, index=False)
+        
         dataset_meta = DatasetMetadata(
-            filename=req.fileName,
+            filename=dataset_path,
             total_rows=req.total_rows if req.total_rows is not None else len(req.data),
             columns=req.columns if req.columns else list(df.columns),
             dtypes=dtypes_dict
         )
-        
-        analysis_id = str(uuid.uuid4())
         
         engine_request = AnalysisRequest(
             query=req.question,

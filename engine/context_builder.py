@@ -75,8 +75,14 @@ Artefacto Esperado: {current_step.get('expected_artifact')}
 * Funciones Prohibidas: {rules.get('code_generation_policy', {}).get('banned_functions')}
 * Tema Gráfico: {rules.get('output_formatting_policy', {}).get('chart_theme')}
 
-Escribe el código Python necesario para completar el PASO ACTUAL y generar el '{current_step.get('expected_artifact')}'. 
-NO modifiques el dataset original.
+Escribe el código Python puro necesario para completar el PASO ACTUAL y generar el '{current_step.get('expected_artifact')}'. 
+
+## [REGLAS DEL SANDBOX DE EJECUCIÓN OBLIGATORIAS]
+1. La variable `df` YA ESTÁ DECLARADA y cargada en memoria con todo tu dataset. NO intentes leer archivos CSV, simplemente asume que `df` existe.
+2. NO modifiques el DataFrame `df` original en memoria.
+3. Si el Artefacto Esperado termina en '.png' (es un gráfico), tu código DEBE guardar la imagen usando `plt.savefig()` o similar en el directorio actual.
+4. Si el Artefacto Esperado demanda texto json o datos resumidos, simplemente impímelos a consola con `print()`.
+5. Envuelve de forma estricta todo tu código Python final en bloques ```python\n ... \n```
 """
         return context
 
