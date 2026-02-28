@@ -1,0 +1,26 @@
+{
+  "data_safety": {
+    "mask_pii": true,
+    "allow_original_mutation": false,
+    "restricted_columns": ["ssn", "credit_card", "password"]
+  },
+  "analysis_policy": {
+    "preferred_library": "pandas",
+    "fallback_library": "polars",
+    "handle_missing_values": "warn_and_drop",
+    "max_sample_rows_for_llm": 2500
+  },
+  "code_generation_policy": {
+    "allowed_libraries": ["pandas", "numpy", "matplotlib", "seaborn", "scikit-learn", "scipy"],
+    "banned_functions": ["os.system", "subprocess.call", "eval", "exec"],
+    "require_type_hints": true,
+    "require_docstrings": false
+  },
+  "output_formatting_policy": {
+    "default_chart_type": "png",
+    "chart_theme": "seaborn-whitegrid",
+    "date_format": "YYYY-MM-DD",
+    "report_format": "markdown",
+    "error_reporting": "verbose"
+  }
+}

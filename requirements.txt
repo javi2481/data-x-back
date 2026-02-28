@@ -6,3 +6,5 @@ python-multipart
 python-dotenv
 httpx
 numpy
+motor
+

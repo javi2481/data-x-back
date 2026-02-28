@@ -16,15 +16,19 @@ import json
 import re
 import logging
 import traceback
+import hashlib
+import uuid
 from typing import Any, Dict, List, Optional
 
-import numpy as np
 import pandas as pd
 import sphinxai
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+
+from engine.db import db_manager
+from engine.repository import repository
 
 # ── Load .env ────────────────────────────────────────────────────────
 load_dotenv()
@@ -58,6 +62,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.on_event("startup")
+async def startup_event():
+    logger.info("Starting Data-X Application...")
+    db_manager.connect_db()
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    logger.info("Shutting down Data-X Application...")
+    db_manager.close_db()
 
 # ── Pydantic models ──────────────────────────────────────────────────
 class AnalyzeRequest(BaseModel):
@@ -66,6 +79,10 @@ class AnalyzeRequest(BaseModel):
     columns: Optional[List[str]] = None
     fileName: Optional[str] = None
     model_size: Optional[str] = "M"  # Default to Balanced
+    stats_summary: Optional[Dict[str, Any]] = None
+    category_summary: Optional[Dict[str, Any]] = None
+    total_rows: Optional[int] = None
+    sampled_rows: Optional[int] = None
 
 
 class SemanticRequest(BaseModel):
@@ -154,14 +171,34 @@ async def analyze(req: AnalyzeRequest):
     try:
         _setup_sphinx()
         
-        # Enriched prompt with describe() and more context
+        # Prepare sample context and basic stats first
         data_context = df.to_string(index=False, max_rows=100)
         stats = df.describe().to_string()
         
+        # --- Phase 2: Enriched Context ---
+        context_parts = []
+        effective_total = req.total_rows if req.total_rows is not None else len(req.data)
+        effective_sampled = req.sampled_rows if req.sampled_rows is not None else len(req.data)
+        
+        if req.stats_summary:
+            context_parts.append(f"Dataset has {effective_total} rows (sample of {effective_sampled}).")
+            context_parts.append(f"Detailed Statistics (percentiles): {json.dumps(req.stats_summary, indent=2)}")
+        
+        if req.category_summary:
+            context_parts.append(f"Categorical Distribution: {json.dumps(req.category_summary, indent=2)}")
+        
+        extra_context = "\n".join(context_parts)
+        
         prompt = (
             f"Question: {req.question}\n\n"
-            f"Data Context (sample of {len(req.data)} rows from {req.fileName or 'dataset'}):\n{data_context}\n\n"
-            f"Statistics Summary:\n{stats}\n\n"
+            f"Data Context (sample of {effective_sampled} rows from {req.fileName or 'dataset'}):\n{data_context}\n\n"
+            f"Quick Stats Summary:\n{stats}\n\n"
+        )
+        
+        if extra_context:
+            prompt += f"EXTENDED CONTEXT:\n{extra_context}\n\n"
+            
+        prompt += (
             "INSTRUCTIONS:\n"
             "1. Analyze the data and answer the question.\n"
             "2. If appropriate, create one or more visualizations using Vega-Lite schema.\n"
@@ -204,49 +241,145 @@ async def analyze(req: AnalyzeRequest):
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(exc)}")
 
 
-@app.post("/analyze/deep", response_model=AnalyzeResponse)
-async def deep_analyze(req: AnalyzeRequest):
-    """Deep analysis using batch_llm to process multiple aspects in parallel."""
+# ── Phase 1 Integration: Engine Orchestration ───────────────────────
+
+# Note: Old /analyze/deep logic was removed in favor of the new modal engine.
+
+from engine.contracts import AnalysisRequest, DatasetMetadata, AnalysisPlanResponse, ExecuteRequest
+from engine.planner import planner
+from engine.executor import executor
+
+@app.post("/analyze/plan", response_model=AnalysisPlanResponse)
+async def analyze_plan(req: AnalyzeRequest):
+    """
+    Fase 1 del Motor Modal: Genera un plan estructurado basado en la solicitud.
+    No ejecuta el código, solo propone el camino para revisión o frontend.
+    """
     try:
         _setup_sphinx()
-        df = pd.DataFrame(req.data)
         
-        sub_questions = [
-            f"Describe la distribución de cada columna numérica basándote en estas estadísticas:\n{df.describe()}",
-            f"Identifica outliers y anomalías en esta muestra de datos:\n{df.to_string(max_rows=50)}",
-            f"Encuentra correlaciones interesantes entre las columnas del dataset.",
-            f"Identifica tendencias temporales si hay columnas que parezcan fechas.",
-            f"Proporciona 3 recomendaciones accionables basadas en los insights del negocio encontrados."
-        ]
+        # 1. Adaptar el Request de FastAPI al Contrato del Motor
+        # Esto previene que el engine dependa de detalles de implementación HTTP
         
-        logger.info("Starting Parallel Batch Analysis (5 tasks)...")
-        results = await sphinxai.batch_llm(
-            sub_questions,
-            model_size="M",
-            max_concurrent=5
+        # Fast conversion for sample context
+        try:
+            df = pd.DataFrame(req.data)
+            sample_data = df.head(10).to_markdown() # Using markdown for leaner LLM context
+            
+            # Extract datatypes
+            dtypes_dict = {col: str(dtype) for col, dtype in df.dtypes.items()}
+            
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Data parsing error: {exc}")
+
+        dataset_meta = DatasetMetadata(
+            filename=req.fileName,
+            total_rows=req.total_rows if req.total_rows is not None else len(req.data),
+            columns=req.columns if req.columns else list(df.columns),
+            dtypes=dtypes_dict
         )
         
-        # Consolidation step
-        logger.info("Consolidating batch results into Executive Report...")
-        consolidated_prompt = (
-            f"Consolida estos análisis individuales sobre el archivo {req.fileName or 'dataset'} en un reporte ejecutivo estructurado en markdown:\n\n"
-            f"{chr(10).join(results)}\n\n"
-            "IMPORTANTE: El reporte debe ser coherente, evitar redundancias y terminar con una sección de conclusiones."
+        analysis_id = str(uuid.uuid4())
+        
+        engine_request = AnalysisRequest(
+            query=req.question,
+            dataset_metadata=dataset_meta,
+            sample_data=sample_data,
+            analysis_type="deep", # Inherited from the old context
+            language="es"
         )
         
-        final_report = await sphinxai.llm(consolidated_prompt, model_size="L")
+        # 2a. Crear tracking de persistencia en DB (Estado: planning)
+        await repository.create_analysis(analysis_id, engine_request)
         
-        # Wrap for Lovable
-        final_content = json.dumps({
-            "content": final_report,
-            "visualizations": [] # Batch consolidation usually doesn't return unified charts yet
-        })
+        # 2b. Orquestar llamado al Motor
+        logger.info(f"Orquestando /analyze/plan vía motor (ID {analysis_id}) para query: {req.question[:30]}...")
+        plan_response = await planner.create_plan(engine_request)
         
-        return AnalyzeResponse(content=final_content, isMock=False)
+        # 2c. Guardar el plan propuesto (Estado: planned)
+        await repository.update_plan(analysis_id, plan_response)
+        
+        # 3. Retornar plan al frontend, inyectándole el analysis_id para seguimiento
+        response_dict = plan_response.model_dump()
+        response_dict["analysis_id"] = analysis_id
+        return response_dict
 
     except Exception as exc:
-        logger.error(f"Deep Analysis Error: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=f"Deep analysis failed: {str(exc)}")
+        logger.error(f"Plan Orchestration Error: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Plan generation failed: {str(exc)}")
+
+
+class ApprovePlanRequest(BaseModel):
+    analysis_id: str
+
+
+@app.post("/analyze/approve")
+async def approve_plan(req: ApprovePlanRequest):
+    """
+    Fase 2.5: El usuario revisó el plan y lo aprueba.
+    Cambiamos estado a 'approved'.
+    """
+    doc = await repository.get_analysis(req.analysis_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Analysis ID no encontrado")
+    
+    if doc.get("status") != "planned":
+        raise HTTPException(status_code=400, detail="El plan debe estar en estado 'planned' para ser aprobado")
+        
+    await repository.mark_approved(req.analysis_id)
+    return {"status": "approved", "analysis_id": req.analysis_id}
+
+
+class ExecutePlanRequest(BaseModel):
+    analysis_id: str
+    options: Optional[Dict[str, Any]] = None
+
+
+@app.post("/analyze/execute")
+async def execute_plan(req_data: ExecutePlanRequest):
+    """
+    Fase 3 del Motor Modal: Pone en marcha la ejecución. Lee el plan desde la BD,
+    lo pasa al motor de ejecución, y guarda los artefactos generados.
+    """
+    try:
+        analysis_id = req_data.analysis_id
+        
+        # Re-hidratar request desde DB
+        doc = await repository.get_analysis(analysis_id)
+        if not doc:
+            raise HTTPException(status_code=404, detail="Analysis ID no encontrado")
+            
+        status = doc.get("status")
+        # if status not in ["planned", "approved"]: 
+        # By default we can enforce approval, but for seamless UI maybe we can auto-execute if 'planned'
+        # Let's enforce it strictly for agentic safety:
+        if status not in ["planned", "approved"]:
+            raise HTTPException(status_code=400, detail=f"Estado invalido para ejecución: {status}. Requiere 'planned' o 'approved'.")
+
+        await repository.mark_running(analysis_id)
+        
+        # Model hydration
+        from engine.contracts import ExecuteRequest
+        original_req = AnalysisRequest(**doc["request"])
+        exec_req = ExecuteRequest(
+            analysis_id=analysis_id,
+            approved_plan=AnalysisPlanResponse(**doc["plan"]),
+            options=req_data.options
+        )
+        
+        logger.info(f"Orquestando /analyze/execute para ID: {analysis_id}")
+        
+        execution_result = await executor.execute_plan(original_req, exec_req)
+        
+        # Guardar en BD (Estado final 'completed' o 'failed')
+        await repository.save_execution_result(analysis_id, execution_result)
+        
+        return execution_result.model_dump()
+        
+    except Exception as exc:
+        logger.error(f"Execute Orchestration Error: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Plan execution failed: {str(exc)}")
+
 
 
 @app.post("/analyze/semantic")
