@@ -278,7 +278,9 @@ async def analyze_plan(req: AnalyzeRequest):
         analysis_id = str(uuid.uuid4())
         
         # Save exact dataset to local temporal vault for future secure execution
-        dataset_path = os.path.join(os.getcwd(), "_datasets", f"{analysis_id}.csv")
+        dataset_dir = os.path.join(os.getcwd(), "_datasets")
+        os.makedirs(dataset_dir, exist_ok=True)
+        dataset_path = os.path.join(dataset_dir, f"{analysis_id}.csv")
         df.to_csv(dataset_path, index=False)
         
         dataset_meta = DatasetMetadata(

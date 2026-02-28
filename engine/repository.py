@@ -29,9 +29,9 @@ class AnalysisRepository:
             {}, 
             # Projection: Evitamos traer el campo 'run' pesado si no es necesario para la lista
             {"_id": 0, "analysis_id": 1, "status": 1, "created_at": 1, "request.query": 1, "request.dataset_metadata.filename": 1}
-        ).sort("created_at", -1).skip(offset).limit(limit)
+        ).sort([("created_at", -1)]).skip(offset).limit(limit)
         
-        history = await cursor.to_list(length=limit)
+        history = await cursor.to_list(limit)
         return history
 
     async def create_analysis(self, analysis_id: str, request: AnalysisRequest) -> None:
