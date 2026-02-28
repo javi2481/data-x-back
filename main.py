@@ -23,12 +23,15 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 import sphinxai
 from dotenv import load_dotenv
+import asyncio
 from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from engine.db import db_manager
 from engine.repository import repository
+from engine.events import event_manager
 
 # ── Load .env ────────────────────────────────────────────────────────
 load_dotenv()
@@ -114,18 +117,15 @@ def _setup_sphinx():
             "SPHINX_LLM_API_KEY, or SPHINX_API_KEY in environment."
         )
     
-    # Configure LLM with tiers
+    # Configure LLM with S, M, L tiers mapped to OpenRouter
     sphinxai.set_llm_config(
         provider="openai", # OpenRouter uses OpenAI format
         api_key=api_key,
         base_url="https://openrouter.ai/api/v1",
         models={
-            "ROUTER_PLANNER_COMPLEX": "anthropic/claude-3.7-sonnet", # Deep reasoning 
-            "ROUTER_PLANNER_FAST": "google/gemini-2.5-pro",          # Fast planning
-            "ROUTER_EXEC_BATCH": "google/gemini-2.0-flash-001",      # Concurrent code gen
-            "ROUTER_EXEC_SURGEON": "anthropic/claude-3.5-sonnet",    # Complex code gen
-            "ROUTER_AUDITOR_FAST": "qwen/qwen3.5-flash-02-23",       # Cheap & fast guardrail
-            "ROUTER_SMART_FIXER": "openai/gpt-4.5-preview"           # Self-correction king
+            "L": "anthropic/claude-3.7-sonnet", # Deep reasoning (Surgeon, Smart Fixer)
+            "M": "google/gemini-2.5-pro",       # Balanced (Complex Planner)
+            "S": "google/gemini-2.0-flash-001"  # Fast & Cheap (Batch Engine, Auditor, Fast Planner)
         }
     )
     
@@ -374,12 +374,23 @@ class ExecutePlanRequest(BaseModel):
     analysis_id: str
     options: Optional[Dict[str, Any]] = None
 
+async def async_run_execution(analysis_id: str, original_req: AnalysisRequest, exec_req: ExecuteRequest):
+    try:
+        execution_result = await executor.execute_plan(original_req, exec_req)
+        # Guardar en BD (Estado final 'completed' o 'failed')
+        await repository.save_execution_result(analysis_id, execution_result)
+        # El executor ya emite el evento 'complete' al final
+    except Exception as exc:
+        logger.error(f"Execute Orchestration Error: {traceback.format_exc()}")
+        await repository.mark_failed(analysis_id, str(exc))
+        await event_manager.emit(analysis_id, "error", {"message": f"Execution failed: {str(exc)}"})
+
 
 @app.post("/analyze/execute")
-async def execute_plan(req_data: ExecutePlanRequest):
+async def execute_plan(req_data: ExecutePlanRequest, background_tasks: BackgroundTasks):
     """
-    Fase 3 del Motor Modal: Pone en marcha la ejecución. Lee el plan desde la BD,
-    lo pasa al motor de ejecución, y guarda los artefactos generados.
+    Fase 3 del Motor Modal: Pone en marcha la ejecución asíncrona enviándola al background.
+    El frontend debe suscribirse a SSE y luego hacer GET /analyze/{id} cuando termine.
     """
     try:
         analysis_id = req_data.analysis_id
@@ -390,9 +401,6 @@ async def execute_plan(req_data: ExecutePlanRequest):
             raise HTTPException(status_code=404, detail="Analysis ID no encontrado")
             
         status = doc.get("status")
-        # if status not in ["planned", "approved"]: 
-        # By default we can enforce approval, but for seamless UI maybe we can auto-execute if 'planned'
-        # Let's enforce it strictly for agentic safety:
         if status not in ["planned", "approved"]:
             raise HTTPException(status_code=400, detail=f"Estado invalido para ejecución: {status}. Requiere 'planned' o 'approved'.")
 
@@ -407,18 +415,40 @@ async def execute_plan(req_data: ExecutePlanRequest):
             options=req_data.options
         )
         
-        logger.info(f"Orquestando /analyze/execute para ID: {analysis_id}")
+        logger.info(f"Enviando /analyze/execute a BackgroundTasks para ID: {analysis_id}")
         
-        execution_result = await executor.execute_plan(original_req, exec_req)
+        background_tasks.add_task(async_run_execution, analysis_id, original_req, exec_req)
         
-        # Guardar en BD (Estado final 'completed' o 'failed')
-        await repository.save_execution_result(analysis_id, execution_result)
-        
-        return execution_result.model_dump()
+        return {
+            "analysis_id": analysis_id,
+            "status": "started",
+            "message": "La ejecución ha comenzado en segundo plano. Escucha el stream SSE para actualizaciones."
+        }
         
     except Exception as exc:
-        logger.error(f"Execute Orchestration Error: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=f"Plan execution failed: {str(exc)}")
+        logger.error(f"Execute Launch Error: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Failed to launch plan execution: {str(exc)}")
+
+@app.get("/analyze/stream/{analysis_id}")
+async def stream_analysis(analysis_id: str):
+    """
+    Endpoint SSE (Server-Sent Events) para transmitir progreso en tiempo real de la ejecución.
+    """
+    async def event_generator():
+        q = event_manager.listen(analysis_id)
+        try:
+            while True:
+                msg = await q.get()
+                yield msg
+                # Desconectar si recibimos evento de finalización
+                if "event: complete" in msg or "event: error" in msg:
+                    break
+        except asyncio.CancelledError:
+            logger.info(f"Cliente SSE desconectado para el análisis {analysis_id}")
+        finally:
+            event_manager.stop_listening(analysis_id, q)
+            
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 

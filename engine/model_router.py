@@ -18,16 +18,16 @@ class ModelRouter:
         """El Arquitecto: Determina el mejor modelo para entender el problema y crear el plan."""
         meta = request.dataset_metadata
         if not meta:
-            return "ROUTER_PLANNER_COMPLEX"
+            return "M"
             
         # Heurísticas de complejidad: muchas columnas o pregunta analítica muy larga
         num_cols = len(meta.columns) if meta.columns else 0
         if num_cols > 20 or len(request.query) > 150:
             logger.info(f"ModelRouter: Seleccionando planificador COMPLEX (Columnas: {num_cols}, Longitud Query: {len(request.query)})")
-            return "ROUTER_PLANNER_COMPLEX"
+            return "M"
             
         logger.info("ModelRouter: Seleccionando planificador FAST.")
-        return "ROUTER_PLANNER_FAST"
+        return "S"
 
     def get_executor_model(self, step_description: str) -> str:
         """El Ingeniero: Determina el mejor modelo para escribir código Python según la tarea."""
@@ -35,18 +35,18 @@ class ModelRouter:
         desc_lower = step_description.lower()
         
         if any(kw in desc_lower for kw in complex_keywords):
-            logger.info(f"ModelRouter: Seleccionando ejecutor SURGEON para tarea compleja de Stats/ML: {step_description[:30]}...")
-            return "ROUTER_EXEC_SURGEON"
+            logger.info(f"ModelRouter: Seleccionando ejecutor SURGEON (L) para tarea de Stats/ML: {step_description[:30]}...")
+            return "L"
             
         # Default para agrupaciones estándar, transformaciones y gráficos
-        return "ROUTER_EXEC_BATCH"
+        return "S"
 
     def get_reviewer_model(self) -> str:
         """El Guardia: Devuelve el modelo más barato/rápido para escaneos semánticos básicos de seguridad."""
-        return "ROUTER_AUDITOR_FAST"
+        return "S"
 
     def get_fixer_model(self) -> str:
         """El Cirujano Fixer: Devuelve el modelo más capaz del mundo para entender Tracebacks y reparar código roto."""
-        return "ROUTER_SMART_FIXER"
+        return "L"
 
 model_router = ModelRouter()

@@ -45,19 +45,22 @@ class Planner:
         planner_model = model_router.get_planner_model(request)
         
         # 4. Llamada REAL al motor Sphinx
-        logger.debug(f"Prompt enviado a Sphinx (Modelo: {planner_model}):\n{full_system_prompt[:200]}...")
+        full_prompt = f"SYSTEM INSTRUCTIONS:\n{full_system_prompt}\n\nUSER REQUEST:\n{request.query}"
+        logger.debug(f"Prompt enviado a Sphinx (Modelo: {planner_model}):\n{full_prompt[:200]}...")
         
         try:
-            response_text = await sphinxai.llm(
-                prompt=request.query, 
-                system=full_system_prompt, 
+            logger.info(f"Enviando solicitud al planificador (Tier: {planner_model})...")
+            # sphinxai.llm might not support `system` kwarg depending on the version, 
+            # so we bake it into the prompt.
+            raw_response = await sphinxai.llm(
+                prompt=full_prompt,
                 model_size=planner_model,
                 timeout=120.0 # Planning can take a while 
             )
             
             # Limpiar posible markdown en la respuesta
-            json_match = re.search(r"(\{.*\})", response_text, re.DOTALL)
-            clean_json_str = json_match.group(1) if json_match else response_text
+            json_match = re.search(r"(\{.*\})", raw_response, re.DOTALL)
+            clean_json_str = json_match.group(1) if json_match else raw_response
             parsed_response = json.loads(clean_json_str)
 
             # 5. Parsear y Validar con el Contrato Pydantic
@@ -73,7 +76,9 @@ class Planner:
             )
             
         except Exception as e:
-            logger.error(f"Falla grave al planificar con el modelo {planner_model}: {e}\nResponse: {response_text if 'response_text' in locals() else 'N/A'}")
+            import traceback
+            err_tb = traceback.format_exc()
+            logger.error(f"Falla grave al planificar con el modelo {planner_model}:\n{err_tb}\nException: {e}")
             raise RuntimeError(f"El LLM Planificador falló: {e}")
 
         logger.info(f"Plan generado exitosamente con ID: {plan_response.analysis_id} y {len(plan_response.steps)} pasos.")

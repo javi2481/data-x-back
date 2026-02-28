@@ -40,15 +40,24 @@ Comunicar el progreso de la ejecución de forma fluida.
     - **Acción:** Implementar SSE para streamear el progreso de la Fase 3 del motor ("Iniciando paso 1...", "Corrigiendo error...", "Artefacto listo").
     - **Impacto:** Se eligen SSE sobre WebSockets porque es más simple de implementar y alinea perfecto con el caso de uso (el backend habla empujando progreso, no necesita canal bidireccional constante durante la ejecución). Previene timeouts HTTP en el browser para tareas largas.
 
-## Fase 4 — Capacidades Avanzadas y Sphinx CLI (Prioridad Más Baja por ahora)
+## Fase 4 — Capacidades Avanzadas y Seguridad (Prioridad Media/Baja)
 
-Extensiones corporativas, de alcance y procesamiento offline masivo.
+Extensiones corporativas, de alcance, procesamiento masivo y protección del servidor.
 
-1.  **Políticas Basadas en Roles (RBAC)**
+1.  **Protección de Payload y Límites Duros (Seguridad/Rendimiento)**
+    - **Acción:**
+      - Limitar el _Body Size_ en FastAPI (ej. 20MB o 50MB) para rechazar peticiones gigantes antes de que saturen la memoria RAM (OOM).
+      - Añadir validación en Pydantic (`AnalyzeRequest`) para que si `data` tiene más de X filas (ej. 10,000), devuelva un HTTP 400 amistoso: "Dataset demasiado grande para el plan gratuito".
+    - **Impacto:** Evita que el servidor caiga por ataques de inyección masiva de datos y controla los costos.
+2.  **Subida de Archivos por Chunks / Multipart (Rendimiento)**
+    - **Acción:** A futuro, evitar enviar el CSV completo convertido en un array JSON gigante. Implementar un endpoint `Multipart/form-data` para recibir el archivo binario/texto real y guardarlo a disco directo.
+    - **Impacto:** Reduce drásticamente la latencia de subida y el consumo de RAM de FastAPI durante el parseo de Pydantic.
+
+3.  **Políticas Basadas en Roles (RBAC)**
     - **Acicón:** Cruzar JWTs con permisos en `rules.json` (Ej. Manager = Análisis profundos; Analista = Solo lectura). Para implementar únicamente cuando haya adopción real, costos relevantes y el producto base sea estable.
-2.  **Ripgrep sobre Datasets Históricos**
+4.  **Ripgrep sobre Datasets Históricos**
     - **Acción:** Expandir el flag `file_search_enabled` para conectar el motor con bases de datos documentales o S3 usando pipelines abstractos. Interesante, pero no es crítico hasta no dominar el dataset activo en contexto.
-3.  **Integración de Sphinx CLI (`sphinx-ai-cli`) para Trabajos Asíncronos (Batch Jobs)**
+5.  **Integración de Sphinx CLI (`sphinx-ai-cli`) para Trabajos Asíncronos (Batch Jobs)**
     - **Acción:** Instalar y utilizar el Sphinx CLI para tareas de fondo pesadas. Mientras que la _SphinxAI Library_ se usa para el dashboard en tiempo real por su control estricto, el CLI se utilizará para "Analistas de Madrugada": scripts automatizados que corran sobre servidores de Jupyter (ej: `sphinx-cli chat --notebook-filepath /datasets/ventas_febrero.ipynb ...`) durante la noche para limpiar o explorar sets de datos gigantes sin bloquear hilos HTTP de FastAPI, inyectándole nuestras políticas mediante `--sphinx-rules-path`.
     - **Impacto:** Permite escalar Data-X a procesamiento offline puro o habilitar un modo "Jupyter Asistido" para data scientists expertos que quieran el control total sobre un notebook autogestionado en vez de un dashboard empaquetado.
 

@@ -13,6 +13,7 @@ from .context_builder import context_builder
 from .reviewer import reviewer
 from .result_formatter import result_formatter
 from .model_router import model_router
+from .events import event_manager
 
 logger = logging.getLogger(__name__)
 
@@ -43,13 +44,14 @@ class Executor:
         # 2. Elegir el modelo adecuado para ejecución generica/batch (La mayoría de los pasos)
         # Podríamos rutear cada paso si sphinxai soportara batch mixto, 
         # pero usamos el Batch Executor general para la cola principal.
-        exec_model = "ROUTER_EXEC_BATCH" 
+        exec_model = "S" 
         for step in exec_req.approved_plan.steps:
-            if model_router.get_executor_model(step.description) == "ROUTER_EXEC_SURGEON":
-                exec_model = "ROUTER_EXEC_SURGEON" # Upgrade whole batch to Surgeon if needed
+            if model_router.get_executor_model(step.description) == "L":
+                exec_model = "L" # Upgrade whole batch to Surgeon if needed
                 break
                 
         logger.info(f"Llamada concurrente usando el Ejecutor: {exec_model}")
+        await event_manager.emit(exec_req.analysis_id, "status", {"message": f"Pensando código para {len(exec_req.approved_plan.steps)} pasos en paralelo...", "step": "code_gen"})
         try:
             generated_codes = await sphinxai.batch_llm(step_prompts, model_size=exec_model)
         except Exception as e:
@@ -65,6 +67,7 @@ class Executor:
         # 3. Iterar sobre el código ya generado para validación y ejecución segura
         for idx, step in enumerate(exec_req.approved_plan.steps):
             logger.info(f"Procesando paso {step.step_number}: {step.description}")
+            await event_manager.emit(exec_req.analysis_id, "status", {"message": f"Revisando seguridad del paso {step.step_number}...", "step": "review", "step_number": step.step_number})
             current_code = self._clean_llm_code(generated_codes[idx])
             
             # 3a. Revisión Funcional (Reviewer Intercept)
@@ -81,6 +84,9 @@ class Executor:
             raw_artifact = None
             
             for attempt in range(max_retries + 1):
+                attempt_msg = f"Ejecutando paso {step.step_number} dictado por IA..." if attempt == 0 else f"Intentando corrección automática de fallo para {step.step_number} (Intento {attempt}/{max_retries})..."
+                await event_manager.emit(exec_req.analysis_id, "status", {"message": attempt_msg, "step": "execution", "step_number": step.step_number, "attempt": attempt})
+                
                 raw_artifact, exec_err = self._execute_python_sandbox(
                     code=current_code, 
                     dataset_path=original_req.dataset_metadata.filename,
@@ -119,8 +125,10 @@ class Executor:
             )
             artifacts_collected.append(formatted_artifact)
             logger.info(f"Artefacto {step.expected_artifact} generado correctamente.")
+            await event_manager.emit(exec_req.analysis_id, "status", {"message": f"Artefacto del paso {step.step_number} capturado con éxito.", "step": "artifact_saved", "step_number": step.step_number})
             
         # 4. Revisión Global Final
+        await event_manager.emit(exec_req.analysis_id, "status", {"message": "Dando revisión semántica final al reporte entero...", "step": "final_review"})
         final_review = reviewer.review_final_output(artifacts_collected, original_req.query)
         final_status = "completed" if not execution_errors and final_review else "failed"
         
@@ -129,6 +137,8 @@ class Executor:
             artifacts=artifacts_collected,
             success=(final_status == "completed")
         )
+        
+        await event_manager.emit(exec_req.analysis_id, "complete", {"status": final_status})
         
         return ExecutionResult(
             analysis_id=exec_req.analysis_id,
