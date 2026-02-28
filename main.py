@@ -318,6 +318,7 @@ async def analyze_plan(req: AnalyzeRequest):
 
 class ApprovePlanRequest(BaseModel):
     analysis_id: str
+    modified_steps: Optional[List[Dict[str, Any]]] = None
 
 
 @app.post("/analyze/approve")
@@ -333,8 +334,38 @@ async def approve_plan(req: ApprovePlanRequest):
     if doc.get("status") != "planned":
         raise HTTPException(status_code=400, detail="El plan debe estar en estado 'planned' para ser aprobado")
         
-    await repository.mark_approved(req.analysis_id)
+    await repository.mark_approved(req.analysis_id, modified_steps=req.modified_steps)
     return {"status": "approved", "analysis_id": req.analysis_id}
+
+@app.get("/analyze/history")
+async def get_analysis_history(limit: int = 20, offset: int = 0):
+    """
+    Fase 2: Recupera el historial de análisis para el Dashboard Persistente.
+    No trae los artefactos generados completos para que la lista cargue rápido.
+    """
+    try:
+        history = await repository.get_history(limit=limit, offset=offset)
+        # Convert _id or handle dates if necessary, but motor handles basic types.
+        # Ensure we don't have non-serializable objects (like ObjectId), but we projected _{id:0}
+        return {"history": history}
+    except Exception as exc:
+        logger.error(f"Error fetching history: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail="Error fetching analysis history")
+
+@app.get("/analyze/{analysis_id}")
+async def get_analysis_status(analysis_id: str):
+    """
+    Fase 2: Recupera un análisis puntual con todos sus datos.
+    Útil para cargar un dashboard antiguo o hacer polling del estado.
+    """
+    try:
+        doc = await repository.get_analysis(analysis_id)
+        if not doc:
+            raise HTTPException(status_code=404, detail="Analysis ID no encontrado")
+        return doc
+    except Exception as exc:
+        logger.error(f"Error fetching analysis {analysis_id}: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail="Error fetching analysis details")
 
 
 class ExecutePlanRequest(BaseModel):

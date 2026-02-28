@@ -23,6 +23,17 @@ class AnalysisRepository:
     def collection(self) -> AsyncIOMotorCollection:
         return db_manager.get_db()["analyses"]
 
+    async def get_history(self, limit: int = 20, offset: int = 0) -> List[Dict[str, Any]]:
+        """Recupera el historial de análisis sin cargar los pesados artefactos."""
+        cursor = self.collection.find(
+            {}, 
+            # Projection: Evitamos traer el campo 'run' pesado si no es necesario para la lista
+            {"_id": 0, "analysis_id": 1, "status": 1, "created_at": 1, "request.query": 1, "request.dataset_metadata.filename": 1}
+        ).sort("created_at", -1).skip(offset).limit(limit)
+        
+        history = await cursor.to_list(length=limit)
+        return history
+
     async def create_analysis(self, analysis_id: str, request: AnalysisRequest) -> None:
         """Paso 1: Guarda la solicitud original con estado 'planning'."""
         doc = {
@@ -49,11 +60,17 @@ class AnalysisRepository:
         await self.collection.update_one({"analysis_id": analysis_id}, update_data)
         logger.debug(f"Plan guardado para {analysis_id}. Estado: 'planned'.")
 
-    async def mark_approved(self, analysis_id: str) -> None:
-        """Paso 3: El frontend aprueba el plan."""
+    async def mark_approved(self, analysis_id: str, modified_steps: Optional[List[Dict[str, Any]]] = None) -> None:
+        """Paso 3: El frontend aprueba el plan. Puede inyectar pasos editados por el usuario."""
+        update_doc = {"status": "approved", "updated_at": datetime.now(timezone.utc)}
+        
+        if modified_steps is not None:
+            # Reemplazamos los pasos del plan almacenado con los pasos elegidos por el usuario
+            update_doc["plan.steps"] = modified_steps
+            
         await self.collection.update_one(
             {"analysis_id": analysis_id},
-            {"$set": {"status": "approved", "updated_at": datetime.now(timezone.utc)}}
+            {"$set": update_doc}
         )
 
     async def mark_running(self, analysis_id: str) -> None:
